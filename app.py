@@ -8,7 +8,6 @@ import pandas as pd
 # Настраиваем широкую страницу
 st.set_page_config(layout="wide", page_title="Поиск ГИСП")
 
-# ID твоего файла на Google Диске
 GDRIVE_FILE_ID = "1Z1Sq8z_kwfoB16aUNaQfxAiZDM0_ndnL"
 LOCAL_FILE = "gisp_data.csv.gz"
 
@@ -23,14 +22,12 @@ def download_from_gdrive():
         return True
     return False
 
-# Храним таблицу в памяти В ОДНОМ ЭКЗЕМПЛЯРЕ сразу для всех коллег
-@st.cache_resource
+# ttl=14400 означает, что сайт САМ каждые 4 часа будет проверять свежий файл на Google Диске!
+@st.cache_resource(ttl=14400)
 def load_data():
-    if not os.path.exists(LOCAL_FILE):
-        with st.spinner("Скачиваю свежую базу с Google Диска (занимает ~5 секунд)..."):
-            download_from_gdrive()
+    with st.spinner("Загружаю актуальную базу данных..."):
+        download_from_gdrive()
 
-    # 1. Читаем первые 5 строк, чтобы узнать дату выгрузки и заголовки
     preview = pd.read_csv(LOCAL_FILE, sep=";", compression="gzip", nrows=5, dtype=str)
     export_info = str(preview.columns[0]) if "Время выгрузки" in str(preview.columns[0]) else "База актуальна"
     
@@ -53,10 +50,10 @@ def load_data():
         else:
             new_cols.append(str(col).strip())
 
-    # 2. Экономим 85% оперативной памяти
+    # Все поисковые колонки (включая ИНН и Предприятие) читаем строго как текст (str)!
     dtype_dict = {}
     for col in new_cols:
-        if col.startswith(('Наимено', 'Реестров', 'Первичн')):
+        if col.startswith(('Наимено', 'Предприя', 'ИНН', 'ОГРН', 'Реестров', 'Первичн', 'Срок действ')):
             dtype_dict[col] = str
         else:
             dtype_dict[col] = "category"
@@ -86,15 +83,12 @@ def find_col(df, prefix):
     cols = [col for col in df.columns if str(col).startswith(prefix)]
     return cols[0] if cols else None
 
-# Шапка сайта с кнопкой обновления базы
 top_col1, top_col2 = st.columns([4, 1])
 with top_col1:
     st.title("Умный поиск по реестру ГИСП 🔍")
 with top_col2:
     st.write("")
     if st.button("🔄 Обновить базу с Google Диска"):
-        if os.path.exists(LOCAL_FILE):
-            os.remove(LOCAL_FILE)
         st.cache_resource.clear()
         st.rerun()
 
@@ -128,33 +122,29 @@ try:
         if prod_query and prod_col:
             stems = [get_stem(w) for w in prod_query.split() if w.strip()]
             for stem in stems:
-                mask = filtered_df[prod_col].str.contains(re.escape(stem), case=False, na=False).fillna(False)
-                filtered_df = filtered_df[mask]
+                filtered_df = filtered_df[filtered_df[prod_col].str.contains(re.escape(stem), case=False, na=False)]
 
         if comp_query and comp_col:
             words = [w.strip() for w in comp_query.split() if w.strip()]
             for w in words:
-                mask = filtered_df[comp_col].str.contains(re.escape(w), case=False, na=False).fillna(False)
-                filtered_df = filtered_df[mask]
+                filtered_df = filtered_df[filtered_df[comp_col].str.contains(re.escape(w), case=False, na=False)]
 
         if inn_query and inn_col:
-            mask = filtered_df[inn_col].str.contains(re.escape(inn_query.strip()), case=False, na=False).fillna(False)
-            filtered_df = filtered_df[mask]
+            filtered_df = filtered_df[filtered_df[inn_col].str.contains(re.escape(inn_query.strip()), case=False, na=False)]
 
         if reg_query and reg_col:
             q = re.escape(reg_query.strip())
             if old_reg_col:
                 mask = (
-                    filtered_df[reg_col].str.contains(q, case=False, na=False).fillna(False) | 
-                    filtered_df[old_reg_col].str.contains(q, case=False, na=False).fillna(False)
+                    filtered_df[reg_col].str.contains(q, case=False, na=False) | 
+                    filtered_df[old_reg_col].str.contains(q, case=False, na=False)
                 )
                 filtered_df = filtered_df[mask]
             else:
-                mask = filtered_df[reg_col].str.contains(q, case=False, na=False).fillna(False)
-                filtered_df = filtered_df[mask]
+                filtered_df = filtered_df[filtered_df[reg_col].str.contains(q, case=False, na=False)]
 
         if only_valid and exp_col and len(filtered_df) > 0:
-            exp_dates = pd.to_datetime(filtered_df[exp_col].astype(str), errors='coerce')
+            exp_dates = pd.to_datetime(filtered_df[exp_col], errors='coerce')
             today = pd.Timestamp.now().normalize()
             filtered_df = filtered_df[exp_dates.isna() | (exp_dates >= today)]
 
