@@ -144,7 +144,7 @@ with top_col2:
 with st.expander("❓ Что делать, если выводит ошибку, и как перейти в карточку товара ГИСП?"):
     st.markdown(
         """
-        * **Как быстро открыть карточку товара в ГИСП:** скопируйте **Реестровый номер** в таблице и нажмите кнопку **«Открыть в ГИСП ↗»** в соседнем столбце. Откроется страница только этого завода на сайте ГИСП — там нажмите на синий реестровый номер, чтобы открыть карточку с тех. характеристиками!
+        * **Как быстро открыть карточку товара в Каталоге ГИСП:** нажмите кнопку **«В Каталог ↗»** рядом с реестровым номером — откроется быстрый Каталог ГИСП, уже отфильтрованный по этому производителю! (Если у завода много товаров, просто вставьте скопированный **Реестровый номер** в поле *«Реестровая запись»* справа в Каталоге).
         * **Если таблица не загрузилась:** попробуйте нажать кнопку **«🔄 Обновить базу с Google Диска»** в правом верхнем углу страницы.
         * **По всем вопросам и предложениям** (или чтобы добавить новое сокращение производителя) пишите на почту: **[svch1073@yandex.ru](mailto:svch1073@yandex.ru)**
         """
@@ -230,17 +230,17 @@ try:
         if exp_col and exp_col in display_df.columns:
             display_df[exp_col] = display_df[exp_col].str.replace(" 00:00:00", "", regex=False)
 
-        # Создаем кликабельную колонку со ссылкой на страницу завода в ГИСП
-        link_col = "🔗 В ГИСП"
+        # Создаем кликабельную колонку со ссылкой сразу в быстрый Каталог ГИСП по ОГРН завода
+        link_col = "🔗 Каталог ГИСП"
         if ogrn_col and ogrn_col in display_df.columns:
-            display_df[link_col] = "https://gisp.gov.ru/pp719v2/pub/orgprod/" + display_df[ogrn_col].astype(str).str.strip() + "/"
+            display_df[link_col] = "https://gisp.gov.ru/goods/#/?company_ogrn=" + display_df[ogrn_col].astype(str).str.strip()
 
         col_config = {}
         for col in display_df.columns:
             if col == prod_col:
                 col_config[col] = st.column_config.TextColumn(col, width=700)
             elif col == link_col:
-                col_config[col] = st.column_config.LinkColumn(col, display_text="Открыть в ГИСП ↗", width=135)
+                col_config[col] = st.column_config.LinkColumn(col, display_text="В Каталог ↗", width=125)
             elif col == comp_col:
                 col_config[col] = st.column_config.TextColumn(col, width=230)
             elif col in [reg_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col]:
