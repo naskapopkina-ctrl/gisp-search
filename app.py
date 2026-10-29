@@ -68,7 +68,7 @@ def load_data():
     gc.collect()
     return df, export_info
 
-# Улучшенный умный поиск: отрезает окончания (включая "ь" и "й" для "простынь") и учитывает е/ё
+# Умный поиск: отрезает окончания (включая "ь" и "й") и учитывает е/ё
 def get_stem_pattern(word):
     word = word.lower().strip()
     if len(word) > 4:
@@ -77,7 +77,6 @@ def get_stem_pattern(word):
             '', word
         )
     escaped = re.escape(word)
-    # Делаем так, чтобы "е" и "ё" находили друг друга
     return re.sub(r'[её]', '[её]', escaped)
 
 def find_col(df, prefix):
@@ -121,7 +120,6 @@ try:
     only_valid = st.checkbox("📅 Автоматически скрывать выписки с истекшим на сегодня сроком действия", value=True)
 
     if prod_query or comp_query or inn_query or reg_query:
-        # Показываем наглядный индикатор процесса поиска
         with st.spinner("🔎 Идет поиск по реестру ГИСП, подождите пару секунд..."):
             filtered_df = df
 
@@ -157,21 +155,26 @@ try:
             total_found = len(filtered_df)
             display_df = filtered_df.head(500) if total_found > 500 else filtered_df
 
-            # Настраиваем ширину колонок: Наименование — широкое, а пустые/FALSE — узкие
+            # Настраиваем точные размеры колонок в пикселях (как на твоем 1-м скриншоте!)
             col_config = {}
             for col in display_df.columns:
                 if col == prod_col:
-                    col_config[col] = st.column_config.TextColumn(col, width="large")
+                    # Широкое поле для Наименования продукции (750 пикселей)
+                    col_config[col] = st.column_config.TextColumn(col, width=750)
                 elif col == comp_col:
-                    col_config[col] = st.column_config.TextColumn(col, width="medium")
+                    col_config[col] = st.column_config.TextColumn(col, width=250)
+                elif col in [reg_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col]:
+                    col_config[col] = st.column_config.TextColumn(col, width=115)
                 else:
-                    # Проверяем, состоит ли колонка в основном из пустых значений или FALSE/Нет
-                    sample = display_df[col].astype(str)
-                    empty_or_false = sample.isin(['nan', 'None', '', 'FALSE', 'False', 'Нет']).mean()
-                    if empty_or_false > 0.7:
+                    # Проверяем настоящие пустые ячейки (isna) и значения FALSE / Нет
+                    is_empty_or_false = (
+                        display_df[col].isna() | 
+                        display_df[col].astype(str).str.strip().isin(['nan', 'None', '', 'FALSE', 'False', 'Нет'])
+                    )
+                    if is_empty_or_false.mean() > 0.7:
                         col_config[col] = st.column_config.Column(col, width="small")
 
-            # Ставим самые важные колонки (включая Наименование!) на первый экран слева
+            # Порядок колонок: самые важные слева
             priority_cols = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col] if c]
             other_cols = [c for c in display_df.columns if c not in priority_cols]
             ordered_cols = priority_cols + other_cols
