@@ -8,6 +8,36 @@ import pandas as pd
 # Настраиваем широкую страницу
 st.set_page_config(layout="wide", page_title="Поиск ГИСП")
 
+# ==============================================================================
+# 📖 СЛОВАРЬ НАРОДНЫХ НАЗВАНИЙ И СОКРАЩЕНИЙ ПРОИЗВОДИТЕЛЕЙ
+# Чтобы добавить новое сокращение, просто допиши строчку ниже по образцу:
+# "короткое_название": "официальное название в реестре",
+# (Если вариантов несколько, раздели их вертикальной чертой | )
+# ==============================================================================
+COMPANY_ALIASES = {
+    "змт": "завод медицинских технологий|здравмедтех",
+    "здравмедтех": "завод медицинских технологий|здравмедтех",
+    "зравмедтех": "завод медицинских технологий|здравмедтех",
+    "епз": "елатомский приборный завод",
+    "еламед": "елатомский приборный завод",
+    "елатомовский": "елатомский",
+}
+
+# Автоматическое сокращение организационно-правовых форм в таблице
+LEGAL_FORMS = {
+    "ОБЩЕСТВО С ОГРАНИЧЕННОЙ ОТВЕТСТВЕННОСТЬЮ": "ООО",
+    "ПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО": "ПАО",
+    "ЗАКРЫТОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО": "ЗАО",
+    "НЕПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО": "НАО",
+    "ОТКРЫТОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО": "ОАО",
+    "АКЦИОНЕРНОЕ ОБЩЕСТВО": "АО",
+    "ИНДИВИДУАЛЬНЫЙ ПРЕДПРИНИМАТЕЛЬ": "ИП",
+    "ФЕДЕРАЛЬНОЕ ГОСУДАРСТВЕННОЕ УНИТАРНОЕ ПРЕДПРИЯТИЕ": "ФГУП",
+    "ФЕДЕРАЛЬНОЕ КАЗЕННОЕ ПРЕДПРИЯТИЕ": "ФКП",
+    "НАУЧНО-ПРОИЗВОДСТВЕННОЕ ОБЪЕДИНЕНИЕ": "НПО",
+    "НАУЧНО-ПРОИЗВОДСТВЕННОЕ ПРЕДПРИЯТИЕ": "НПП",
+}
+
 GDRIVE_FILE_ID = "1Z1Sq8z_kwfoB16aUNaQfxAiZDM0_ndnL"
 LOCAL_FILE = "gisp_data.csv.gz"
 
@@ -21,6 +51,14 @@ def download_from_gdrive():
                     f.write(chunk)
         return True
     return False
+
+def shorten_company_name(name):
+    if not isinstance(name, str):
+        return name
+    res = name
+    for full_form, short_form in LEGAL_FORMS.items():
+        res = re.sub(re.escape(full_form), short_form, res, flags=re.IGNORECASE)
+    return res
 
 @st.cache_resource(ttl=14400)
 def load_data():
@@ -65,6 +103,15 @@ def load_data():
         dtype=dtype_dict,
         low_memory=False
     )
+
+    # Быстро сокращаем ООО, АО, ПАО, ЗАО, ИП в колонке Предприятие
+    comp_cols = [c for c in df.columns if str(c).startswith('Предприя')]
+    if comp_cols:
+        c_col = comp_cols[0]
+        unique_names = df[c_col].dropna().unique()
+        name_map = {name: shorten_company_name(name) for name in unique_names}
+        df[c_col] = df[c_col].map(name_map)
+
     gc.collect()
     return df, export_info
 
@@ -106,14 +153,13 @@ try:
     okpd_col = find_col(df, 'ОКПД')
     tnved_col = find_col(df, 'ТН ВЭД')
 
-    # Форма поиска: работает и по нажатию Enter на ПК, и по кнопке "Найти" на телефоне
     with st.form("search_form"):
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             prod_query = st.text_input("🏷️ Название товара:", placeholder="Например: простынь одноразовая")
         with col2:
-            comp_query = st.text_input("🏭 Производитель:", placeholder="Например: Аспласт")
+            comp_query = st.text_input("🏭 Производитель:", placeholder="Например: ЕПЗ или ЗМТ")
         with col3:
             inn_query = st.text_input("🔢 ИНН:", placeholder="Например: 7701314910")
         with col4:
@@ -133,9 +179,19 @@ try:
                 filtered_df = filtered_df[filtered_df[prod_col].str.contains(pat, case=False, na=False)]
 
         if comp_query and comp_col:
-            words = [w.strip() for w in comp_query.split() if w.strip()]
-            for w in words:
-                filtered_df = filtered_df[filtered_df[comp_col].str.contains(re.escape(w), case=False, na=False)]
+            q_clean = comp_query.lower().strip()
+            # Если весь запрос целиком есть в словаре сокращений
+            if q_clean in COMPANY_ALIASES:
+                filtered_df = filtered_df[filtered_df[comp_col].str.contains(COMPANY_ALIASES[q_clean], case=False, na=False)]
+            else:
+                words = [w.strip().strip('"\'«»') for w in comp_query.split() if w.strip()]
+                for w in words:
+                    w_low = w.lower()
+                    if w_low in COMPANY_ALIASES:
+                        pat = COMPANY_ALIASES[w_low]
+                    else:
+                        pat = get_stem_pattern(w)
+                    filtered_df = filtered_df[filtered_df[comp_col].str.contains(pat, case=False, na=False)]
 
         if inn_query and inn_col:
             filtered_df = filtered_df[filtered_df[inn_col].str.contains(re.escape(inn_query.strip()), case=False, na=False)]
@@ -161,7 +217,6 @@ try:
         if exp_col and exp_col in display_df.columns:
             display_df[exp_col] = display_df[exp_col].str.replace(" 00:00:00", "", regex=False)
 
-        # Настраиваем ширину колонок в пикселях
         col_config = {}
         for col in display_df.columns:
             if col == prod_col:
@@ -191,9 +246,7 @@ try:
                 exp_dates = pd.to_datetime(df_to_style[exp_col], errors='coerce')
                 days_left = (exp_dates - today).dt.days
                 
-                # От полугода до 1 года (184..365 дней) — мягкий бледно-желтый
                 yellow_mask = (days_left > 183) & (days_left <= 365)
-                # Полгода и меньше (<= 183 дней) — мягкий бледно-красный
                 red_mask = days_left <= 183
                 
                 styles.loc[yellow_mask, :] = "background-color: #fff6d1; color: #1a1a1a;"
