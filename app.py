@@ -106,78 +106,79 @@ try:
     okpd_col = find_col(df, 'ОКПД')
     tnved_col = find_col(df, 'ТН ВЭД')
 
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        prod_query = st.text_input("🏷️ Название товара:", placeholder="Например: простынь одноразовая")
-    with col2:
-        comp_query = st.text_input("🏭 Производитель:", placeholder="Например: Аспласт")
-    with col3:
-        inn_query = st.text_input("🔢 ИНН:", placeholder="Например: 7701314910")
-    with col4:
-        reg_query = st.text_input("📄 Реестровый номер:", placeholder="Например: 10084557")
+    # Форма поиска: работает и по нажатию Enter на ПК, и по кнопке "Найти" на телефоне!
+    with st.form("search_form"):
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            prod_query = st.text_input("🏷️ Название товара:", placeholder="Например: простынь одноразовая")
+        with col2:
+            comp_query = st.text_input("🏭 Производитель:", placeholder="Например: Аспласт")
+        with col3:
+            inn_query = st.text_input("🔢 ИНН:", placeholder="Например: 7701314910")
+        with col4:
+            reg_query = st.text_input("📄 Реестровый номер:", placeholder="Например: 10084557")
 
-    only_valid = st.checkbox("📅 Автоматически скрывать выписки с истекшим на сегодня сроком действия", value=True)
+        submitted = st.form_submit_button("🔍 Найти", type="primary")
 
     if prod_query or comp_query or inn_query or reg_query:
-        with st.spinner("🔎 Идет поиск по реестру ГИСП, подождите пару секунд..."):
-            filtered_df = df
+        # Выводим яркую заметную плашку, которая висит до полной готовности таблицы
+        status_box = st.empty()
+        status_box.warning("⏳ Идет поиск по реестру ГИСП и загрузка таблицы, пожалуйста подождите...")
 
-            if prod_query and prod_col:
-                patterns = [get_stem_pattern(w) for w in prod_query.split() if w.strip()]
-                for pat in patterns:
-                    filtered_df = filtered_df[filtered_df[prod_col].str.contains(pat, case=False, na=False)]
+        filtered_df = df
 
-            if comp_query and comp_col:
-                words = [w.strip() for w in comp_query.split() if w.strip()]
-                for w in words:
-                    filtered_df = filtered_df[filtered_df[comp_col].str.contains(re.escape(w), case=False, na=False)]
+        if prod_query and prod_col:
+            patterns = [get_stem_pattern(w) for w in prod_query.split() if w.strip()]
+            for pat in patterns:
+                filtered_df = filtered_df[filtered_df[prod_col].str.contains(pat, case=False, na=False)]
 
-            if inn_query and inn_col:
-                filtered_df = filtered_df[filtered_df[inn_col].str.contains(re.escape(inn_query.strip()), case=False, na=False)]
+        if comp_query and comp_col:
+            words = [w.strip() for w in comp_query.split() if w.strip()]
+            for w in words:
+                filtered_df = filtered_df[filtered_df[comp_col].str.contains(re.escape(w), case=False, na=False)]
 
-            if reg_query and reg_col:
-                q = re.escape(reg_query.strip())
-                if old_reg_col:
-                    mask = (
-                        filtered_df[reg_col].str.contains(q, case=False, na=False) | 
-                        filtered_df[old_reg_col].str.contains(q, case=False, na=False)
-                    )
-                    filtered_df = filtered_df[mask]
-                else:
-                    filtered_df = filtered_df[filtered_df[reg_col].str.contains(q, case=False, na=False)]
+        if inn_query and inn_col:
+            filtered_df = filtered_df[filtered_df[inn_col].str.contains(re.escape(inn_query.strip()), case=False, na=False)]
 
-            if only_valid and exp_col and len(filtered_df) > 0:
-                exp_dates = pd.to_datetime(filtered_df[exp_col], errors='coerce')
-                today = pd.Timestamp.now().normalize()
-                filtered_df = filtered_df[exp_dates.isna() | (exp_dates >= today)]
+        if reg_query and reg_col:
+            q = re.escape(reg_query.strip())
+            if old_reg_col:
+                mask = (
+                    filtered_df[reg_col].str.contains(q, case=False, na=False) | 
+                    filtered_df[old_reg_col].str.contains(q, case=False, na=False)
+                )
+                filtered_df = filtered_df[mask]
+            else:
+                filtered_df = filtered_df[filtered_df[reg_col].str.contains(q, case=False, na=False)]
 
-            total_found = len(filtered_df)
-            display_df = filtered_df.head(500) if total_found > 500 else filtered_df
+        total_found = len(filtered_df)
+        display_df = (filtered_df.head(500) if total_found > 500 else filtered_df).copy()
 
-            # Настраиваем точные размеры колонок в пикселях (как на твоем 1-м скриншоте!)
-            col_config = {}
-            for col in display_df.columns:
-                if col == prod_col:
-                    # Широкое поле для Наименования продукции (750 пикселей)
-                    col_config[col] = st.column_config.TextColumn(col, width=750)
-                elif col == comp_col:
-                    col_config[col] = st.column_config.TextColumn(col, width=250)
-                elif col in [reg_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col]:
-                    col_config[col] = st.column_config.TextColumn(col, width=115)
-                else:
-                    # Проверяем настоящие пустые ячейки (isna) и значения FALSE / Нет
-                    is_empty_or_false = (
-                        display_df[col].isna() | 
-                        display_df[col].astype(str).str.strip().isin(['nan', 'None', '', 'FALSE', 'False', 'Нет'])
-                    )
-                    if is_empty_or_false.mean() > 0.7:
-                        col_config[col] = st.column_config.Column(col, width="small")
+        # Убираем тяжелые словари category у найденных строк, чтобы таблица открывалась мгновенно!
+        for c in display_df.select_dtypes(include=['category']).columns:
+            display_df[c] = display_df[c].astype(object)
 
-            # Порядок колонок: самые важные слева
-            priority_cols = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col] if c]
-            other_cols = [c for c in display_df.columns if c not in priority_cols]
-            ordered_cols = priority_cols + other_cols
+        # Настраиваем ширину колонок в пикселях
+        col_config = {}
+        for col in display_df.columns:
+            if col == prod_col:
+                col_config[col] = st.column_config.TextColumn(col, width=750)
+            elif col == comp_col:
+                col_config[col] = st.column_config.TextColumn(col, width=250)
+            elif col in [reg_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col]:
+                col_config[col] = st.column_config.TextColumn(col, width=115)
+            else:
+                is_empty_or_false = (
+                    display_df[col].isna() | 
+                    display_df[col].astype(str).str.strip().isin(['nan', 'None', '', 'FALSE', 'False', 'Нет'])
+                )
+                if is_empty_or_false.mean() > 0.7:
+                    col_config[col] = st.column_config.Column(col, width="small")
+
+        priority_cols = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col] if c]
+        other_cols = [c for c in display_df.columns if c not in priority_cols]
+        ordered_cols = priority_cols + other_cols
 
         if total_found > 500:
             st.markdown(f"### Найдено записей: **{total_found}** *(показаны первые 500 — уточните запрос для сужения поиска)*")
@@ -185,8 +186,11 @@ try:
             st.markdown(f"### Найдено записей: **{total_found}**")
             
         st.dataframe(display_df, width="stretch", column_config=col_config, column_order=ordered_cols)
+        
+        # Убираем желтую плашку ожидания, когда таблица уже отрисована
+        status_box.empty()
     else:
-        st.info("👆 Введите данные хотя бы в одно поле выше (можно комбинировать несколько полей сразу) и нажмите Enter.")
+        st.info("👆 Введите данные хотя бы в одно поле выше и нажмите кнопку «🔍 Найти» (или клавишу Enter).")
 
 except Exception as e:
     st.error(f"Ошибка загрузки базы: {e}")
