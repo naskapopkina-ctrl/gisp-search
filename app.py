@@ -104,7 +104,6 @@ def load_data():
         low_memory=False
     )
 
-    # Быстро сокращаем ООО, АО, ПАО, ЗАО, ИП в колонке Предприятие
     comp_cols = [c for c in df.columns if str(c).startswith('Предприя')]
     if comp_cols:
         c_col = comp_cols[0]
@@ -142,11 +141,12 @@ with top_col2:
 # ==============================================================================
 # 💬 БЛОК ПОДСКАЗОК И СВОРАЧИВАЕМЫХ СТРОК (ЗДЕСЬ МОЖНО МЕНЯТЬ ТЕКСТ)
 # ==============================================================================
-with st.expander("❓ Что делать, если выводит ошибку?"):
+with st.expander("❓ Что делать, если выводит ошибку, и как перейти в карточку товара ГИСП?"):
     st.markdown(
         """
-        * Попробуйте нажать кнопку **«🔄 Обновить базу с Google Диска»** в правом верхнем углу страницы.
-        * Если ошибка сохраняется или у вас есть предложения по улучшению поиска (например, добавить новое сокращение производителя) — напишите, пожалуйста, на почту: **[svch1073@yandex.ru](mailto:svch1073@yandex.ru)**
+        * **Как быстро открыть карточку товара в ГИСП:** скопируйте **Реестровый номер** в таблице и нажмите кнопку **«Открыть в ГИСП ↗»** в соседнем столбце. Откроется страница только этого завода на сайте ГИСП — там нажмите на синий реестровый номер, чтобы открыть карточку с тех. характеристиками!
+        * **Если таблица не загрузилась:** попробуйте нажать кнопку **«🔄 Обновить базу с Google Диска»** в правом верхнем углу страницы.
+        * **По всем вопросам и предложениям** (или чтобы добавить новое сокращение производителя) пишите на почту: **[svch1073@yandex.ru](mailto:svch1073@yandex.ru)**
         """
     )
 
@@ -224,21 +224,27 @@ try:
         total_found = len(filtered_df)
         display_df = (filtered_df.head(500) if total_found > 500 else filtered_df).copy()
 
-        # Убираем тяжелые словари category и лишние нули времени "00:00:00" в датах
         for c in display_df.select_dtypes(include=['category']).columns:
             display_df[c] = display_df[c].astype(object)
             
         if exp_col and exp_col in display_df.columns:
             display_df[exp_col] = display_df[exp_col].str.replace(" 00:00:00", "", regex=False)
 
+        # Создаем кликабельную колонку со ссылкой на страницу завода в ГИСП
+        link_col = "🔗 В ГИСП"
+        if ogrn_col and ogrn_col in display_df.columns:
+            display_df[link_col] = "https://gisp.gov.ru/pp719v2/pub/orgprod/" + display_df[ogrn_col].astype(str).str.strip() + "/"
+
         col_config = {}
         for col in display_df.columns:
             if col == prod_col:
-                col_config[col] = st.column_config.TextColumn(col, width=750)
+                col_config[col] = st.column_config.TextColumn(col, width=700)
+            elif col == link_col:
+                col_config[col] = st.column_config.LinkColumn(col, display_text="Открыть в ГИСП ↗", width=135)
             elif col == comp_col:
-                col_config[col] = st.column_config.TextColumn(col, width=250)
+                col_config[col] = st.column_config.TextColumn(col, width=230)
             elif col in [reg_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col]:
-                col_config[col] = st.column_config.TextColumn(col, width=115)
+                col_config[col] = st.column_config.TextColumn(col, width=110)
             else:
                 is_empty_or_false = (
                     display_df[col].isna() | 
@@ -247,12 +253,11 @@ try:
                 if is_empty_or_false.mean() > 0.7:
                     col_config[col] = st.column_config.Column(col, width="small")
 
-        priority_cols = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col] if c]
+        priority_cols = [c for c in [prod_col, reg_col, link_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col] if c and c in display_df.columns]
         other_cols = [c for c in display_df.columns if c not in priority_cols]
         ordered_cols = priority_cols + other_cols
         display_df = display_df[ordered_cols]
 
-        # Подкрашиваем строки по остаточному сроку действия выписки
         def highlight_expiring(df_to_style):
             styles = pd.DataFrame("", index=df_to_style.index, columns=df_to_style.columns)
             if exp_col and exp_col in df_to_style.columns:
