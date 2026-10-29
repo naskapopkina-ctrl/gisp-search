@@ -106,7 +106,7 @@ try:
     okpd_col = find_col(df, 'ОКПД')
     tnved_col = find_col(df, 'ТН ВЭД')
 
-    # Форма поиска: работает и по нажатию Enter на ПК, и по кнопке "Найти" на телефоне!
+    # Форма поиска: работает и по нажатию Enter на ПК, и по кнопке "Найти" на телефоне
     with st.form("search_form"):
         col1, col2, col3, col4 = st.columns(4)
         
@@ -122,7 +122,6 @@ try:
         submitted = st.form_submit_button("🔍 Найти", type="primary")
 
     if prod_query or comp_query or inn_query or reg_query:
-        # Выводим яркую заметную плашку, которая висит до полной готовности таблицы
         status_box = st.empty()
         status_box.warning("⏳ Идет поиск по реестру ГИСП и загрузка таблицы, пожалуйста подождите...")
 
@@ -155,9 +154,12 @@ try:
         total_found = len(filtered_df)
         display_df = (filtered_df.head(500) if total_found > 500 else filtered_df).copy()
 
-        # Убираем тяжелые словари category у найденных строк, чтобы таблица открывалась мгновенно!
+        # Убираем тяжелые словари category и лишние нули времени "00:00:00" в датах
         for c in display_df.select_dtypes(include=['category']).columns:
             display_df[c] = display_df[c].astype(object)
+            
+        if exp_col and exp_col in display_df.columns:
+            display_df[exp_col] = display_df[exp_col].str.replace(" 00:00:00", "", regex=False)
 
         # Настраиваем ширину колонок в пикселях
         col_config = {}
@@ -179,15 +181,35 @@ try:
         priority_cols = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col] if c]
         other_cols = [c for c in display_df.columns if c not in priority_cols]
         ordered_cols = priority_cols + other_cols
+        display_df = display_df[ordered_cols]
+
+        # Подкрашиваем строки по остаточному сроку действия выписки
+        def highlight_expiring(df_to_style):
+            styles = pd.DataFrame("", index=df_to_style.index, columns=df_to_style.columns)
+            if exp_col and exp_col in df_to_style.columns:
+                today = pd.Timestamp.now().normalize()
+                exp_dates = pd.to_datetime(df_to_style[exp_col], errors='coerce')
+                days_left = (exp_dates - today).dt.days
+                
+                # От полугода до 1 года (184..365 дней) — мягкий бледно-желтый
+                yellow_mask = (days_left > 183) & (days_left <= 365)
+                # Полгода и меньше (<= 183 дней) — мягкий бледно-красный
+                red_mask = days_left <= 183
+                
+                styles.loc[yellow_mask, :] = "background-color: #fff6d1; color: #1a1a1a;"
+                styles.loc[red_mask, :] = "background-color: #ffe6e6; color: #1a1a1a;"
+            return styles
+
+        styled_df = display_df.style.apply(highlight_expiring, axis=None)
 
         if total_found > 500:
             st.markdown(f"### Найдено записей: **{total_found}** *(показаны первые 500 — уточните запрос для сужения поиска)*")
         else:
             st.markdown(f"### Найдено записей: **{total_found}**")
             
-        st.dataframe(display_df, width="stretch", column_config=col_config, column_order=ordered_cols)
+        st.caption("🎨 **Подсветка сроков действия:** 🔴 *Бледно-красный* — осталось полгода и меньше | 🟡 *Бледно-желтый* — остался год и меньше")
+        st.dataframe(styled_df, width="stretch", column_config=col_config)
         
-        # Убираем желтую плашку ожидания, когда таблица уже отрисована
         status_box.empty()
     else:
         st.info("👆 Введите данные хотя бы в одно поле выше и нажмите кнопку «🔍 Найти» (или клавишу Enter).")
