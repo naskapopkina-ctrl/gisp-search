@@ -2,7 +2,6 @@ import os
 import re
 import gc
 import io
-import html
 import zipfile
 import requests
 import streamlit as st
@@ -213,9 +212,9 @@ with top_col2:
 with st.expander("❓ Что делать, если выводит ошибку, и секреты умного поиска"):
     st.markdown(
         """
-        * **🔍 Полный текст товара и копирование номера:** поставьте галочку слева от любой найденной строки в таблице — над таблицей откроется карточка с полным перечнем вариантов исполнения (где ваши слова подсвечены желтым маркером!) и кнопкой копирования номера в 1 клик.
-        * **🚫 Слова-исключения:** если в выдаче попадаются лишние товары, просто впишите ненужные слова в поле *«Слова-исключения»* (например: `гель нестерильная`).
-        * **Как быстро открыть карточку товара в Каталоге ГИСП:** нажмите кнопку **«В Каталог ↗»** рядом с реестровым номером — откроется быстрый Каталог ГИСП, уже отфильтрованный по этому производителю!
+        * **🚫 Слова-исключения:** если в выдаче попадаются лишние товары, просто впишите ненужные слова в поле *«Слова-исключения»* через пробел (например: `гель нестерильная`).
+        * **Как посмотреть технические характеристики товара в Каталоге ГИСП:** скопируйте найденный **Реестровый номер** из нашей таблицы, откройте [Каталог продукции ГИСП](https://gisp.gov.ru/goods/#/) и вставьте номер в поле *«Реестровая запись (ПП РФ № 719)»* справа.
+        * **Если таблица не загрузилась:** попробуйте нажать кнопку **«🔄 Обновить базу с Google Диска»** в правом верхнем углу страницы.
         * **По всем вопросам и предложениям** (или чтобы добавить новое сокращение производителя) пишите на почту: **[svch1073@yandex.ru](mailto:svch1073@yandex.ru)**
         """
     )
@@ -335,26 +334,21 @@ try:
         if exp_col and exp_col in display_df.columns:
             display_df[exp_col] = display_df[exp_col].str.replace(" 00:00:00", "", regex=False)
 
-        # Формируем байты Excel-файла до добавления служебной колонки со ссылкой
-        priority_export = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, gost_col, ogrn_col] if c and c in display_df.columns]
-        other_export = [c for c in display_df.columns if c not in priority_export]
-        xlsx_data = df_to_xlsx_bytes(display_df[priority_export + other_export])
+        priority_cols = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, gost_col, ogrn_col] if c and c in display_df.columns]
+        other_cols = [c for c in display_df.columns if c not in priority_cols]
+        ordered_cols = priority_cols + other_cols
+        display_df = display_df[ordered_cols]
 
-        # Создаем кликабельную колонку со ссылкой сразу в быстрый Каталог ГИСП
-        link_col = "🔗 Каталог ГИСП"
-        if ogrn_col and ogrn_col in display_df.columns:
-            display_df[link_col] = "https://gisp.gov.ru/goods/#/?company_ogrn=" + display_df[ogrn_col].astype(str).str.strip()
+        xlsx_data = df_to_xlsx_bytes(display_df)
 
         col_config = {}
         for col in display_df.columns:
             if col == prod_col:
-                col_config[col] = st.column_config.TextColumn(col, width=700)
-            elif col == link_col:
-                col_config[col] = st.column_config.LinkColumn(col, display_text="В Каталог ↗", width=125)
+                col_config[col] = st.column_config.TextColumn(col, width=750)
             elif col == comp_col:
-                col_config[col] = st.column_config.TextColumn(col, width=230)
+                col_config[col] = st.column_config.TextColumn(col, width=250)
             elif col in [reg_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col]:
-                col_config[col] = st.column_config.TextColumn(col, width=110)
+                col_config[col] = st.column_config.TextColumn(col, width=115)
             else:
                 is_empty_or_false = (
                     display_df[col].isna() | 
@@ -362,11 +356,6 @@ try:
                 )
                 if is_empty_or_false.mean() > 0.7:
                     col_config[col] = st.column_config.Column(col, width="small")
-
-        priority_cols = [c for c in [prod_col, reg_col, link_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, gost_col, ogrn_col] if c and c in display_df.columns]
-        other_cols = [c for c in display_df.columns if c not in priority_cols]
-        ordered_cols = priority_cols + other_cols
-        display_df = display_df[ordered_cols]
 
         def highlight_expiring(df_to_style):
             styles = pd.DataFrame("", index=df_to_style.index, columns=df_to_style.columns)
@@ -389,23 +378,14 @@ try:
         else:
             st.markdown(f"### Найдено записей: **{total_found}**")
 
-        st.caption(
-            "💡 **Совет:** кликните на галочку слева от любой строки таблицы, чтобы развернуть полный текст товара с подсветкой слов и скопировать номер! | "
-            "🎨 **Сроки действия:** 🔴 *≤ полгода* | 🟡 *≤ 1 год*"
-        )
+        st.caption("🎨 **Подсветка сроков действия:** 🔴 *Бледно-красный* — осталось полгода и меньше | 🟡 *Бледно-желтый* — остался год и меньше")
 
-        # Контейнер над таблицей, куда выводится полный текст при клике на строку
-        detail_container = st.container()
-
-        event = st.dataframe(
+        st.dataframe(
             styled_df,
             width="stretch",
-            column_config=col_config,
-            on_select="rerun",
-            selection_mode="single-row"
+            column_config=col_config
         )
 
-        # Кнопка скачивания Excel теперь ровно под таблицей слева!
         if len(display_df) > 0:
             st.download_button(
                 label="📥 Скачать таблицу в Excel (.xlsx)",
@@ -413,43 +393,6 @@ try:
                 file_name="gisp_search_results.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-
-        # Если пользователь кликнул на строку — показываем полную карточку с желтым маркером
-        if event and event.selection and event.selection.rows:
-            sel_idx = event.selection.rows[0]
-            sel_row = display_df.iloc[sel_idx]
-            full_prod_text = html.escape(str(sel_row.get(prod_col, "")))
-
-            if prod_query:
-                pos_words = [w for w in prod_query.split() if w.strip() and not w.startswith('-')]
-                for w in pos_words:
-                    pat = get_stem_pattern(w)
-                    full_prod_text = re.sub(
-                        f"({pat}[а-яёa-z0-9]*)",
-                        r'<mark style="background-color: #ffe066; color: #000; padding: 1px 4px; border-radius: 4px; font-weight: 600;">\1</mark>',
-                        full_prod_text,
-                        flags=re.IGNORECASE
-                    )
-
-            with detail_container:
-                with st.container(border=True):
-                    d_col1, d_col2 = st.columns([3, 1])
-                    with d_col1:
-                        st.markdown("#### 📋 Полное наименование выбранной продукции:")
-                        st.markdown(
-                            f'<div style="font-size: 16px; line-height: 1.6;">{full_prod_text}</div>',
-                            unsafe_allow_html=True
-                        )
-                    with d_col2:
-                        st.markdown("**📄 Реестровый номер** *(нажмите иконку справа для копирования)*:")
-                        st.code(str(sel_row.get(reg_col, "")), language=None)
-                        st.markdown(
-                            f"**🏭 Производитель:** {sel_row.get(comp_col, '')}  \n"
-                            f"**🔢 ИНН:** `{sel_row.get(inn_col, '')}` | **📅 До:** `{sel_row.get(exp_col, '')}`  \n"
-                            f"**📑 ОКПД2:** `{sel_row.get(okpd_col, '')}` | **ТУ/ГОСТ:** `{sel_row.get(gost_col, '')}`"
-                        )
-                        if link_col in sel_row and sel_row[link_col]:
-                            st.link_button("🔗 Открыть товары завода в Каталоге ГИСП ↗", str(sel_row[link_col]))
         
         status_box.empty()
     else:
