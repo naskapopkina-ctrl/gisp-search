@@ -1,9 +1,13 @@
 import os
 import re
 import gc
+import io
+import html
+import zipfile
 import requests
 import streamlit as st
 import pandas as pd
+from xml.sax.saxutils import escape as xml_escape
 
 # Настраиваем широкую страницу
 st.set_page_config(layout="wide", page_title="Поиск ГИСП")
@@ -60,6 +64,73 @@ def shorten_company_name(name):
         res = re.sub(re.escape(full_form), short_form, res, flags=re.IGNORECASE)
     return res
 
+# Быстрая генерация настоящего файла Excel (.xlsx) в памяти без внешних библиотек
+def df_to_xlsx_bytes(df_export):
+    buf = io.BytesIO()
+    cols = list(df_export.columns)
+    rows_xml = []
+
+    # Шапка таблицы (строка 1)
+    header_cells = "".join(
+        f'<c t="inlineStr"><is><t>{xml_escape(str(c))}</t></is></c>' for c in cols
+    )
+    rows_xml.append(f'<row r="1">{header_cells}</row>')
+
+    # Данные таблицы
+    for r_idx, row in enumerate(df_export.itertuples(index=False), start=2):
+        cells = []
+        for val in row:
+            if pd.isna(val) or str(val) in ("None", "nan", "<NA>"):
+                cells.append('<c t="inlineStr"><is><t></t></is></c>')
+            else:
+                clean_str = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(val))
+                cells.append(f'<c t="inlineStr"><is><t>{xml_escape(clean_str)}</t></is></c>')
+        rows_xml.append(f'<row r="{r_idx}">{"".join(cells)}</row>')
+
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(rows_xml)}</sheetData>'
+        '</worksheet>'
+    )
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+            '</Types>'
+        )
+        zf.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+            '</Relationships>'
+        )
+        zf.writestr(
+            "xl/workbook.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+            '<sheets><sheet name="Реестр ГИСП" sheetId="1" r:id="rId1"/></sheets>'
+            '</workbook>'
+        )
+        zf.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+            '</Relationships>'
+        )
+        zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+    return buf.getvalue()
+
 @st.cache_resource(ttl=14400)
 def load_data():
     with st.spinner("⏳ Загружаю актуальную базу данных с Google Диска..."):
@@ -89,7 +160,7 @@ def load_data():
 
     dtype_dict = {}
     for col in new_cols:
-        if col.startswith(('Наимено', 'Предприя', 'ИНН', 'ОГРН', 'Реестров', 'Первичн', 'Срок действ')):
+        if col.startswith(('Наимено', 'Предприя', 'ИНН', 'ОГРН', 'Реестров', 'Первичн', 'Срок действ', 'ОКПД', 'ТН ВЭД', 'Изготовл')):
             dtype_dict[col] = str
         else:
             dtype_dict[col] = "category"
@@ -141,11 +212,12 @@ with top_col2:
 # ==============================================================================
 # 💬 БЛОК ПОДСКАЗОК И СВОРАЧИВАЕМЫХ СТРОК (ЗДЕСЬ МОЖНО МЕНЯТЬ ТЕКСТ)
 # ==============================================================================
-with st.expander("❓ Что делать, если выводит ошибку, и как перейти в карточку товара ГИСП?"):
+with st.expander("❓ Что делать, если выводит ошибку, и секреты умного поиска"):
     st.markdown(
         """
-        * **Как быстро открыть карточку товара в Каталоге ГИСП:** нажмите кнопку **«В Каталог ↗»** рядом с реестровым номером — откроется быстрый Каталог ГИСП, уже отфильтрованный по этому производителю! (Если у завода много товаров, просто вставьте скопированный **Реестровый номер** в поле *«Реестровая запись»* справа в Каталоге).
-        * **Если таблица не загрузилась:** попробуйте нажать кнопку **«🔄 Обновить базу с Google Диска»** в правом верхнем углу страницы.
+        * **🔍 Полный текст товара и копирование номера:** кликните на ячейку слева от любой найденной строки в таблице — над таблицей откроется карточка с полным перечнем вариантов исполнения (где ваши слова подсвечены желтым маркером!) и кнопкой копирования номера в 1 клик.
+        * **🚫 Минус-слова:** если нужно исключить лишние товары, напишите слово со знаком минус — например: `пробирка вакуумная -гель` (уберет все пробирки с гелем).
+        * **Как быстро открыть карточку товара в Каталоге ГИСП:** нажмите кнопку **«В Каталог ↗»** рядом с реестровым номером — откроется быстрый Каталог ГИСП, уже отфильтрованный по этому производителю!
         * **По всем вопросам и предложениям** (или чтобы добавить новое сокращение производителя) пишите на почту: **[svch1073@yandex.ru](mailto:svch1073@yandex.ru)**
         """
     )
@@ -167,32 +239,43 @@ try:
     exp_col = find_col(df, 'Срок действ')
     okpd_col = find_col(df, 'ОКПД')
     tnved_col = find_col(df, 'ТН ВЭД')
+    gost_col = find_col(df, 'Изготовл')
 
     with st.form("search_form"):
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns([2.2, 1.5, 1.1, 1.1, 1.3])
         
         with col1:
-            prod_query = st.text_input("🏷️ Название товара:", placeholder="Например: простынь одноразовая")
+            prod_query = st.text_input("🏷️ Название товара (можно с -минус словами):", placeholder="Например: контейнер 60 мл -ложка")
         with col2:
             comp_query = st.text_input("🏭 Производитель:", placeholder="Например: ЕПЗ или ЗМТ")
         with col3:
             inn_query = st.text_input("🔢 ИНН:", placeholder="Например: 7701314910")
         with col4:
             reg_query = st.text_input("📄 Реестровый номер:", placeholder="Например: 10084557")
+        with col5:
+            okpd_gost_query = st.text_input("📑 ОКПД2 / ТУ / ГОСТ:", placeholder="Например: 32.50 или ГОСТ")
 
         submitted = st.form_submit_button("🔍 Найти", type="primary")
 
-    if prod_query or comp_query or inn_query or reg_query:
+    if prod_query or comp_query or inn_query or reg_query or okpd_gost_query:
         status_box = st.empty()
         status_box.warning("⏳ Идет поиск по реестру ГИСП и загрузка таблицы, пожалуйста подождите...")
 
         filtered_df = df
 
+        # 1. Поиск по названию товара (с поддержкой минус-слов через "-")
         if prod_query and prod_col:
-            patterns = [get_stem_pattern(w) for w in prod_query.split() if w.strip()]
-            for pat in patterns:
+            pos_words = [w for w in prod_query.split() if w.strip() and not w.startswith('-')]
+            neg_words = [w[1:] for w in prod_query.split() if w.startswith('-') and len(w) > 1]
+            
+            for w in pos_words:
+                pat = get_stem_pattern(w)
                 filtered_df = filtered_df[filtered_df[prod_col].str.contains(pat, case=False, na=False)]
+            for nw in neg_words:
+                neg_pat = get_stem_pattern(nw)
+                filtered_df = filtered_df[~filtered_df[prod_col].str.contains(neg_pat, case=False, na=False)]
 
+        # 2. Поиск по производителю (с поддержкой словаря сокращений и минус-слов)
         if comp_query and comp_col:
             q_clean = comp_query.lower().strip()
             if q_clean in COMPANY_ALIASES:
@@ -200,16 +283,19 @@ try:
             else:
                 words = [w.strip().strip('"\'«»') for w in comp_query.split() if w.strip()]
                 for w in words:
-                    w_low = w.lower()
-                    if w_low in COMPANY_ALIASES:
-                        pat = COMPANY_ALIASES[w_low]
+                    if w.startswith('-') and len(w) > 1:
+                        neg_pat = get_stem_pattern(w[1:])
+                        filtered_df = filtered_df[~filtered_df[comp_col].str.contains(neg_pat, case=False, na=False)]
                     else:
-                        pat = get_stem_pattern(w)
-                    filtered_df = filtered_df[filtered_df[comp_col].str.contains(pat, case=False, na=False)]
+                        w_low = w.lower()
+                        pat = COMPANY_ALIASES[w_low] if w_low in COMPANY_ALIASES else get_stem_pattern(w)
+                        filtered_df = filtered_df[filtered_df[comp_col].str.contains(pat, case=False, na=False)]
 
+        # 3. Поиск по ИНН
         if inn_query and inn_col:
             filtered_df = filtered_df[filtered_df[inn_col].str.contains(re.escape(inn_query.strip()), case=False, na=False)]
 
+        # 4. Поиск по реестровому номеру
         if reg_query and reg_col:
             q = re.escape(reg_query.strip())
             if old_reg_col:
@@ -221,6 +307,18 @@ try:
             else:
                 filtered_df = filtered_df[filtered_df[reg_col].str.contains(q, case=False, na=False)]
 
+        # 5. Поиск по ОКПД2, ТН ВЭД или номеру ТУ / ГОСТ
+        if okpd_gost_query:
+            for w in okpd_gost_query.split():
+                q_part = re.escape(w.strip())
+                if not q_part:
+                    continue
+                mask = pd.Series(False, index=filtered_df.index)
+                for col_candidate in [okpd_col, gost_col, tnved_col, prod_col]:
+                    if col_candidate and col_candidate in filtered_df.columns:
+                        mask = mask | filtered_df[col_candidate].astype(str).str.contains(q_part, case=False, na=False)
+                filtered_df = filtered_df[mask]
+
         total_found = len(filtered_df)
         display_df = (filtered_df.head(500) if total_found > 500 else filtered_df).copy()
 
@@ -230,7 +328,12 @@ try:
         if exp_col and exp_col in display_df.columns:
             display_df[exp_col] = display_df[exp_col].str.replace(" 00:00:00", "", regex=False)
 
-        # Создаем кликабельную колонку со ссылкой сразу в быстрый Каталог ГИСП по ОГРН завода
+        # Формируем байты Excel-файла до добавления служебной колонки со ссылкой
+        priority_export = [c for c in [prod_col, reg_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, gost_col, ogrn_col] if c and c in display_df.columns]
+        other_export = [c for c in display_df.columns if c not in priority_export]
+        xlsx_data = df_to_xlsx_bytes(display_df[priority_export + other_export])
+
+        # Создаем кликабельную колонку со ссылкой сразу в быстрый Каталог ГИСП
         link_col = "🔗 Каталог ГИСП"
         if ogrn_col and ogrn_col in display_df.columns:
             display_df[link_col] = "https://gisp.gov.ru/goods/#/?company_ogrn=" + display_df[ogrn_col].astype(str).str.strip()
@@ -253,7 +356,7 @@ try:
                 if is_empty_or_false.mean() > 0.7:
                     col_config[col] = st.column_config.Column(col, width="small")
 
-        priority_cols = [c for c in [prod_col, reg_col, link_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, ogrn_col] if c and c in display_df.columns]
+        priority_cols = [c for c in [prod_col, reg_col, link_col, comp_col, inn_col, exp_col, okpd_col, tnved_col, gost_col, ogrn_col] if c and c in display_df.columns]
         other_cols = [c for c in display_df.columns if c not in priority_cols]
         ordered_cols = priority_cols + other_cols
         display_df = display_df[ordered_cols]
@@ -274,13 +377,74 @@ try:
 
         styled_df = display_df.style.apply(highlight_expiring, axis=None)
 
-        if total_found > 500:
-            st.markdown(f"### Найдено записей: **{total_found}** *(показаны первые 500 — уточните запрос для сужения поиска)*")
-        else:
-            st.markdown(f"### Найдено записей: **{total_found}**")
-            
-        st.caption("🎨 **Подсветка сроков действия:** 🔴 *Бледно-красный* — осталось полгода и меньше | 🟡 *Бледно-желтый* — остался год и меньше")
-        st.dataframe(styled_df, width="stretch", column_config=col_config)
+        head_col1, head_col2 = st.columns([3, 1])
+        with head_col1:
+            if total_found > 500:
+                st.markdown(f"### Найдено записей: **{total_found}** *(показаны первые 500 — уточните запрос для сужения поиска)*")
+            else:
+                st.markdown(f"### Найдено записей: **{total_found}**")
+        with head_col2:
+            if len(display_df) > 0:
+                st.download_button(
+                    label="📥 Скачать таблицу в Excel (.xlsx)",
+                    data=xlsx_data,
+                    file_name="gisp_search_results.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+        st.caption(
+            "💡 **Совет:** кликните на галочку слева от любой строки таблицы, чтобы развернуть полный текст товара с подсветкой слов и скопировать номер! | "
+            "🎨 **Сроки действия:** 🔴 *≤ полгода* | 🟡 *≤ 1 год*"
+        )
+
+        # Контейнер над таблицей, куда выводится полный текст при клике на строку
+        detail_container = st.container()
+
+        event = st.dataframe(
+            styled_df,
+            width="stretch",
+            column_config=col_config,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
+
+        # Если пользователь кликнул на строку — показываем полную карточку с желтым маркером!
+        if event and event.selection and event.selection.rows:
+            sel_idx = event.selection.rows[0]
+            sel_row = display_df.iloc[sel_idx]
+            full_prod_text = html.escape(str(sel_row.get(prod_col, "")))
+
+            # Подсвечиваем слова поиска желтым маркером
+            if prod_query:
+                pos_words = [w for w in prod_query.split() if w.strip() and not w.startswith('-')]
+                for w in pos_words:
+                    pat = get_stem_pattern(w)
+                    full_prod_text = re.sub(
+                        f"({pat}[а-яёa-z0-9]*)",
+                        r'<mark style="background-color: #ffe066; color: #000; padding: 1px 4px; border-radius: 4px; font-weight: 600;">\1</mark>',
+                        full_prod_text,
+                        flags=re.IGNORECASE
+                    )
+
+            with detail_container:
+                with st.container(border=True):
+                    d_col1, d_col2 = st.columns([3, 1])
+                    with d_col1:
+                        st.markdown("#### 📋 Полное наименование выбранной продукции:")
+                        st.markdown(
+                            f'<div style="font-size: 16px; line-height: 1.6;">{full_prod_text}</div>',
+                            unsafe_allow_html=True
+                        )
+                    with d_col2:
+                        st.markdown("**📄 Реестровый номер** *(нажмите иконку справа для копирования)*:")
+                        st.code(str(sel_row.get(reg_col, "")), language=None)
+                        st.markdown(
+                            f"**🏭 Производитель:** {sel_row.get(comp_col, '')}  \n"
+                            f"**🔢 ИНН:** `{sel_row.get(inn_col, '')}` | **📅 До:** `{sel_row.get(exp_col, '')}`  \n"
+                            f"**📑 ОКПД2:** `{sel_row.get(okpd_col, '')}` | **ТУ/ГОСТ:** `{sel_row.get(gost_col, '')}`"
+                        )
+                        if link_col in sel_row and sel_row[link_col]:
+                            st.link_button("🔗 Открыть товары завода в Каталоге ГИСП ↗", str(sel_row[link_col]))
         
         status_box.empty()
     else:
