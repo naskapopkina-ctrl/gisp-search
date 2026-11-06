@@ -70,13 +70,11 @@ def df_to_xlsx_bytes(df_export):
     cols = list(df_export.columns)
     rows_xml = []
 
-    # Шапка таблицы (строка 1)
     header_cells = "".join(
         f'<c t="inlineStr"><is><t>{xml_escape(str(c))}</t></is></c>' for c in cols
     )
     rows_xml.append(f'<row r="1">{header_cells}</row>')
 
-    # Данные таблицы
     for r_idx, row in enumerate(df_export.itertuples(index=False), start=2):
         cells = []
         for val in row:
@@ -215,8 +213,8 @@ with top_col2:
 with st.expander("❓ Что делать, если выводит ошибку, и секреты умного поиска"):
     st.markdown(
         """
-        * **🔍 Полный текст товара и копирование номера:** кликните на ячейку слева от любой найденной строки в таблице — над таблицей откроется карточка с полным перечнем вариантов исполнения (где ваши слова подсвечены желтым маркером!) и кнопкой копирования номера в 1 клик.
-        * **🚫 Минус-слова:** если нужно исключить лишние товары, напишите слово со знаком минус — например: `пробирка вакуумная -гель` (уберет все пробирки с гелем).
+        * **🔍 Полный текст товара и копирование номера:** поставьте галочку слева от любой найденной строки в таблице — над таблицей откроется карточка с полным перечнем вариантов исполнения (где ваши слова подсвечены желтым маркером!) и кнопкой копирования номера в 1 клик.
+        * **🚫 Слова-исключения:** если в выдаче попадаются лишние товары, просто впишите ненужные слова в поле *«Слова-исключения»* (например: `гель нестерильная`).
         * **Как быстро открыть карточку товара в Каталоге ГИСП:** нажмите кнопку **«В Каталог ↗»** рядом с реестровым номером — откроется быстрый Каталог ГИСП, уже отфильтрованный по этому производителю!
         * **По всем вопросам и предложениям** (или чтобы добавить новое сокращение производителя) пишите на почту: **[svch1073@yandex.ru](mailto:svch1073@yandex.ru)**
         """
@@ -242,28 +240,30 @@ try:
     gost_col = find_col(df, 'Изготовл')
 
     with st.form("search_form"):
-        col1, col2, col3, col4, col5 = st.columns([2.2, 1.5, 1.1, 1.1, 1.3])
+        col1, col2, col3, col4, col5, col6 = st.columns([1.8, 1.4, 1.3, 1.0, 1.1, 1.2])
         
         with col1:
-            prod_query = st.text_input("🏷️ Название товара (можно с -минус словами):", placeholder="Например: контейнер 60 мл -ложка")
+            prod_query = st.text_input("🏷️ Название товара:", placeholder="Например: контейнер 60 мл")
         with col2:
-            comp_query = st.text_input("🏭 Производитель:", placeholder="Например: ЕПЗ или ЗМТ")
+            exclude_query = st.text_input("🚫 Слова-исключения:", placeholder="Например: ложка шпатель")
         with col3:
-            inn_query = st.text_input("🔢 ИНН:", placeholder="Например: 7701314910")
+            comp_query = st.text_input("🏭 Производитель:", placeholder="Например: ЕПЗ или ЗМТ")
         with col4:
-            reg_query = st.text_input("📄 Реестровый номер:", placeholder="Например: 10084557")
+            inn_query = st.text_input("🔢 ИНН:", placeholder="Например: 7701314910")
         with col5:
+            reg_query = st.text_input("📄 Реестровый номер:", placeholder="Например: 10084557")
+        with col6:
             okpd_gost_query = st.text_input("📑 ОКПД2 / ТУ / ГОСТ:", placeholder="Например: 32.50 или ГОСТ")
 
         submitted = st.form_submit_button("🔍 Найти", type="primary")
 
-    if prod_query or comp_query or inn_query or reg_query or okpd_gost_query:
+    if prod_query or exclude_query or comp_query or inn_query or reg_query or okpd_gost_query:
         status_box = st.empty()
         status_box.warning("⏳ Идет поиск по реестру ГИСП и загрузка таблицы, пожалуйста подождите...")
 
         filtered_df = df
 
-        # 1. Поиск по названию товара (с поддержкой минус-слов через "-")
+        # 1. Поиск по названию товара
         if prod_query and prod_col:
             pos_words = [w for w in prod_query.split() if w.strip() and not w.startswith('-')]
             neg_words = [w[1:] for w in prod_query.split() if w.startswith('-') and len(w) > 1]
@@ -275,7 +275,14 @@ try:
                 neg_pat = get_stem_pattern(nw)
                 filtered_df = filtered_df[~filtered_df[prod_col].str.contains(neg_pat, case=False, na=False)]
 
-        # 2. Поиск по производителю (с поддержкой словаря сокращений и минус-слов)
+        # 2. Фильтр по отдельному полю "Слова-исключения"
+        if exclude_query and prod_col:
+            excl_words = [w.strip().lstrip('-') for w in re.split(r'[\s,]+', exclude_query) if w.strip().lstrip('-')]
+            for ew in excl_words:
+                neg_pat = get_stem_pattern(ew)
+                filtered_df = filtered_df[~filtered_df[prod_col].str.contains(neg_pat, case=False, na=False)]
+
+        # 3. Поиск по производителю
         if comp_query and comp_col:
             q_clean = comp_query.lower().strip()
             if q_clean in COMPANY_ALIASES:
@@ -291,11 +298,11 @@ try:
                         pat = COMPANY_ALIASES[w_low] if w_low in COMPANY_ALIASES else get_stem_pattern(w)
                         filtered_df = filtered_df[filtered_df[comp_col].str.contains(pat, case=False, na=False)]
 
-        # 3. Поиск по ИНН
+        # 4. Поиск по ИНН
         if inn_query and inn_col:
             filtered_df = filtered_df[filtered_df[inn_col].str.contains(re.escape(inn_query.strip()), case=False, na=False)]
 
-        # 4. Поиск по реестровому номеру
+        # 5. Поиск по реестровому номеру
         if reg_query and reg_col:
             q = re.escape(reg_query.strip())
             if old_reg_col:
@@ -307,7 +314,7 @@ try:
             else:
                 filtered_df = filtered_df[filtered_df[reg_col].str.contains(q, case=False, na=False)]
 
-        # 5. Поиск по ОКПД2, ТН ВЭД или номеру ТУ / ГОСТ
+        # 6. Поиск по ОКПД2, ТН ВЭД или номеру ТУ / ГОСТ
         if okpd_gost_query:
             for w in okpd_gost_query.split():
                 q_part = re.escape(w.strip())
@@ -377,20 +384,10 @@ try:
 
         styled_df = display_df.style.apply(highlight_expiring, axis=None)
 
-        head_col1, head_col2 = st.columns([3, 1])
-        with head_col1:
-            if total_found > 500:
-                st.markdown(f"### Найдено записей: **{total_found}** *(показаны первые 500 — уточните запрос для сужения поиска)*")
-            else:
-                st.markdown(f"### Найдено записей: **{total_found}**")
-        with head_col2:
-            if len(display_df) > 0:
-                st.download_button(
-                    label="📥 Скачать таблицу в Excel (.xlsx)",
-                    data=xlsx_data,
-                    file_name="gisp_search_results.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        if total_found > 500:
+            st.markdown(f"### Найдено записей: **{total_found}** *(показаны первые 500 — уточните запрос для сужения поиска)*")
+        else:
+            st.markdown(f"### Найдено записей: **{total_found}**")
 
         st.caption(
             "💡 **Совет:** кликните на галочку слева от любой строки таблицы, чтобы развернуть полный текст товара с подсветкой слов и скопировать номер! | "
@@ -408,13 +405,21 @@ try:
             selection_mode="single-row"
         )
 
-        # Если пользователь кликнул на строку — показываем полную карточку с желтым маркером!
+        # Кнопка скачивания Excel теперь ровно под таблицей слева!
+        if len(display_df) > 0:
+            st.download_button(
+                label="📥 Скачать таблицу в Excel (.xlsx)",
+                data=xlsx_data,
+                file_name="gisp_search_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # Если пользователь кликнул на строку — показываем полную карточку с желтым маркером
         if event and event.selection and event.selection.rows:
             sel_idx = event.selection.rows[0]
             sel_row = display_df.iloc[sel_idx]
             full_prod_text = html.escape(str(sel_row.get(prod_col, "")))
 
-            # Подсвечиваем слова поиска желтым маркером
             if prod_query:
                 pos_words = [w for w in prod_query.split() if w.strip() and not w.startswith('-')]
                 for w in pos_words:
